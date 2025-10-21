@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <title>Pay 支付授权示例 (Ethers v6)</title>
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.10.0/dist/ethers.umd.min.js"></script>
+
+    <style>
+        /* (CSS 样式保持不变) */
+        body {
+            font-family: "JetBrains Mono", monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            gap: 16px;
+        }
+        .card {
+            background: #161b22;
+            padding: 30px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+        button {
+            padding: 12px 24px;
+            background: #238636;
+            border: none;
+            color: #fff;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover { background: #2ea043; }
+        #status {
+            padding: 8px 16px;
+            margin-top: 15px;
+            background: #0d1117;
+            border-radius: 8px;
+            min-height: 20px;
+            text-align: center;
+            border: 1px solid #30363d;
+        }
+        .data-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #0d1117;
+            border-radius: 8px;
+            text-align: left;
+            border: 1px solid #30363d;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h2>9Pay 支付授权示例</h2>
+    <div id="status">等待操作...</div>
+    <button id="payButton">检查授权中...</button>
+    <div id="dataBox" class="data-box hidden"></div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        if (typeof ethers === 'undefined' || typeof ethers.BrowserProvider === 'undefined') {
+            document.getElementById('status').textContent = "⚠️ 错误：ethers.js 库未能加载。";
+            return;
+        }
+
+        const API_RESOURCE_URL = 'http://localhost:3002/api/weather';
+        const JWT_STORAGE_KEY = 'jwt_token';
+        const statusBox = document.getElementById('status');
+        const payButton = document.getElementById('payButton');
+        const dataBox = document.getElementById('dataBox');
+
+        let signerInstance = null;
+
+        function updateStatus(msg, type = 'info') {
+          statusBox.textContent = msg;
+          if (type === 'error') statusBox.style.color = '#f85149';
+          else if (type === 'success') statusBox.style.color = '#3fb950';
+          else statusBox.style.color = '#c9d1d9';
+        }
+
+        async function fetchWithJWT() {
+          const jwt = sessionStorage.getItem(JWT_STORAGE_KEY);
+          const headers = jwt ? { 'Authorization': 'Bearer ' + jwt } : {};
+          const res = await fetch(API_RESOURCE_URL, { headers, redirect: "manual" });
+          return res;
+        }
+
+        async function attemptWithJWT() {
+          payButton.disabled = true;
+          dataBox.classList.add('hidden');
+
+          try {
+            updateStatus('🌐 正在检查授权状态...', 'info');
+            const res = await fetchWithJWT();
+
+            const status = res.status;
+
+            if (status === 200) {
+              const data = await res.json();
+              dataBox.textContent = JSON.stringify(data, null, 2);
+              dataBox.classList.remove('hidden');
+              updateStatus('✅ 资源获取成功！', 'success');
+              payButton.classList.add('hidden');
+              return;
+            }
+
+            if (status === 402) {
+              payButton.classList.remove('hidden');
+              payButton.textContent = '连接钱包并支付';
+              payButton.disabled = false;
+              updateStatus('💰 检测到资源需支付，请连接钱包。', 'info');
+              return;
+            }
+
+            if (status === 401) {
+              sessionStorage.removeItem(JWT_STORAGE_KEY);
+              updateStatus('⚠️ 授权过期，请点击按钮重新支付。', 'error');
+            } else if (status > 402 || status < 200) {
+              updateStatus(`❌ API 返回未知状态: ${status}`, 'error');
+            }
+
+            payButton.classList.remove('hidden');
+            payButton.textContent = '重试';
+            payButton.disabled = false;
+
+          } catch (err) {
+            console.error("Attempt failed:", err);
+            updateStatus('❌ 请求失败: ' + (err.message || '网络连接或CORS错误'), 'error');
+            payButton.classList.remove('hidden');
+            payButton.textContent = '重试';
+            payButton.disabled = false;
+          }
+        }
+
+        async function connectAndSettle() {
+          payButton.disabled = true;
+          try {
+            // 1. 连接钱包和获取签名者
+            if (!window.ethereum) throw new Error("未检测到钱包，请安装 MetaMask 或启用 EVM 钱包。");
+
+            if (!signerInstance) {
+                 updateStatus('🔌 正在请求钱包连接授权...', 'info');
+                 await window.ethereum.request({ method: 'eth_requestAccounts' });
+                 updateStatus('🗂️ 正在初始化钱包提供者...', 'info');
+                 const provider = new ethers.BrowserProvider(window.ethereum);
+                 signerInstance = await provider.getSigner();
+            }
+
+            const address = await signerInstance.getAddress();
+            updateStatus('👛 钱包已连接：' + address.slice(0, 6) + '...', 'success');
+
+            // 2. 再次请求 402 并获取最新的支付授权消息
+            updateStatus('📄 请求支付授权消息...', 'info');
+            const payReq = await fetch(API_RESOURCE_URL, { redirect: "manual" });
+
+            if (payReq.status !== 402) {
+                 throw new Error(`API 状态错误，期望 402，实际 ${payReq.status}`);
+            }
+
+            const payBody = await payReq.json();
+            let paymentMessage = payBody.paymentMessage;
+
+            if (!paymentMessage) {
+                const headerMessage = payReq.headers.get('x-payment-message');
+                if (!headerMessage) {
+                    throw new Error('API 响应体和头部均未提供 X-Payment-Message。');
+                }
+                paymentMessage = headerMessage;
+            }
+
+            // 3. 签名授权
+            updateStatus('🖊️ 等待签名授权（请检查钱包弹出窗口）...', 'info');
+            const signature = await signerInstance.signMessage(paymentMessage);
+
+            // 4. 提交签名给后端结算 (POST 请求)
+            updateStatus('📡 正在提交签名和支付结算...', 'info');
+            const response = await fetch(API_RESOURCE_URL, {
+              method: 'POST',
+              headers: {
+                'X-Payment': signature,
+                'X-Payment-Message': paymentMessage,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({})
+            });
+
+            if (response.ok) {
+              const jwt = response.headers.get('x-payment-receipt');
+              if (!jwt) throw new Error("服务器未返回有效的 JWT 收据。");
+              sessionStorage.setItem(JWT_STORAGE_KEY, jwt);
+              updateStatus('🎉 支付成功！正在访问资源...', 'success');
+
+              // 🌟 修正：直接调用 attemptWithJWT 来获取最终资源
+              attemptWithJWT();
+
+            } else {
+              const errorBody = await response.json().catch(() => ({}));
+              const errorMessage = errorBody.message || errorBody.error || `Status ${response.status}`;
+              throw new Error(`支付结算失败: ${errorMessage}`);
+            }
+          } catch (err) {
+            payButton.disabled = false;
+            console.error(err);
+            const displayError = err.message && err.message.includes("User rejected") ? "用户拒绝连接/签名。" : err.message;
+            updateStatus('❌ 操作失败: ' + displayError, 'error');
+          }
+        }
+
+        // 点击按钮时，触发支付或重试检查
+        payButton.addEventListener('click', () => {
+            if (payButton.textContent.includes('连接钱包并支付') || payButton.textContent.includes('重新连接并支付')) {
+                connectAndSettle();
+            } else {
+                attemptWithJWT();
+            }
+        });
+
+        // 页面加载后自动检测授权状态
+        attemptWithJWT();
+    });
+</script>
+</body>
+</html>

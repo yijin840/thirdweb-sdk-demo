@@ -1,0 +1,41 @@
+{
+  "name": "thiredweb",
+  "version": "1.0.0",
+  "description": "Thirdweb x402 payment server",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/third_web.ts",
+    "build": "tsc",
+    "start": "node dist/third_web.js",
+    "clean": "rm -rf node_modules package-lock.json dist && npm install",
+    "server": "node dist/server.js",
+    "st": "node dist/simple_third_web_server.js",
+    "client": "tsx client.ts",
+    "client:dev": "tsx watch client.ts",
+    "build:frontend": "vite build"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.5",
+    "@thirdweb-dev/chains": "^0.1.120",
+    "@thirdweb-dev/pay": "^0.1.8",
+    "@thirdweb-dev/sdk": "^4.0.99",
+    "@thirdweb-dev/wallets": "^2.5.39",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "hono": "^4.9.12",
+    "thirdweb": "^5.109.1",
+    "vite": "^7.1.11",
+    "x402-hono": "^0.6.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^20.19.23",
+    "@types/node-fetch": "^2.6.13",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "type": "module"
+}

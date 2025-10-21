@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WalletConnect Base Sepolia 扫码签名 (V2 完整修复版)</title>
+<style>
+body {
+    font-family: sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+.container {
+    background: #fff;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    max-width: 500px;
+    width: 100%;
+    text-align: center;
+}
+h1 {
+    color: #0052FF;
+    margin-bottom: 10px;
+    font-size: 1.8em;
+}
+.network-info {
+    background: #f0f7ff;
+    padding: 10px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    font-size: 0.9em;
+    color: #0052FF;
+}
+button {
+    background: #0052FF;
+    color: #fff;
+    border: none;
+    padding: 12px 25px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    width: 100%;
+    transition: background 0.3s;
+    margin-top: 10px;
+}
+button:hover:not(:disabled) {
+    background: #0041CC;
+}
+button:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+.status-box {
+    margin-top: 20px;
+    padding: 15px;
+    border-radius: 8px;
+    text-align: left;
+}
+.status-pending {
+    background: #fff3cd;
+    border: 1px solid #ffeeba;
+    color: #856404;
+}
+.status-success {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+}
+.status-error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+.status-info {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    color: #0c5460;
+}
+#qrcode-display {
+    margin-top: 20px;
+    padding: 20px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    text-align: center;
+}
+#result-data {
+    margin-top: 20px;
+    text-align: left;
+    background: #e9ecef;
+    padding: 15px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 0.9em;
+    font-family: monospace;
+}
+.debug-log {
+    margin-top: 20px;
+    padding: 15px;
+    background: #2d2d2d;
+    color: #00ff00;
+    border-radius: 8px;
+    text-align: left;
+    font-family: monospace;
+    font-size: 0.8em;
+    max-height: 200px;
+    overflow-y: auto;
+    display: none;
+}
+</style>
+
+<!-- 使用正确的 WalletConnect V2 CDN 链接 -->
+<script src="https://cdn.jsdelivr.net/npm/@walletconnect/web3-provider@2.9.3/dist/umd/index.min.js"></script>
+<script src="https://cdn.ethers.io/lib/ethers-5.7.umd.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <h1>🔐 Base Sepolia 扫码签名 (V2)</h1>
+    <div class="network-info">
+        <strong>网络:</strong> Base Sepolia Testnet<br>
+        <strong>Chain ID:</strong> 84532
+    </div>
+    <p>使用 WalletConnect V2.0 连接 MetaMask 钱包并签名</p>
+
+    <button id="connect-button" disabled>
+        <span id="button-text">加载中...</span>
+    </button>
+
+    <div id="wallet-status" class="status-box" style="display:none">
+        <span id="status-message"></span>
+    </div>
+
+    <div id="qrcode-display"></div>
+    <div id="result-data" style="display:none"></div>
+    <div id="debug-log" class="debug-log"></div>
+</div>
+
+<script>
+// 使用你提供的 PROJECT_ID
+const PROJECT_ID = '88a44136b0f0a1737379214c4419eebf';
+
+// Base Sepolia 配置
+const BASE_SEPOLIA_CONFIG = {
+    chainId: 84532,
+    rpcUrl: 'https://sepolia.base.org',
+    name: 'Base Sepolia',
+};
+
+const API_URL = "http://localhost:3002/api/weather";
+const connectButton = document.getElementById('connect-button');
+const buttonText = document.getElementById('button-text');
+const statusBox = document.getElementById('wallet-status');
+const statusMessage = document.getElementById('status-message');
+const resultBox = document.getElementById('result-data');
+const debugLog = document.getElementById('debug-log');
+const qrcodeDisplay = document.getElementById('qrcode-display');
+
+let wcProvider = null;
+
+// 调试日志
+function addDebugLog(msg, type = 'info') {
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry = document.createElement('div');
+    const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : '📝';
+    logEntry.textContent = `[${timestamp}] ${prefix} ${msg}`;
+    if (type === 'error') logEntry.style.color = '#ff6b6b';
+    if (type === 'success') logEntry.style.color = '#51cf66';
+    debugLog.appendChild(logEntry);
+    debugLog.scrollTop = debugLog.scrollHeight;
+    debugLog.style.display = 'block';
+    console.log(msg);
+}
+
+function updateStatus(msg, className) {
+    statusBox.className = `status-box ${className}`;
+    statusMessage.innerHTML = msg;
+    statusBox.style.display = 'block';
+}
+
+function setButtonState(text, disabled = false) {
+    buttonText.textContent = text;
+    connectButton.disabled = disabled;
+}
+
+// 获取待签名消息
+async function fetchPaymentMessage() {
+    updateStatus("正在获取支付消息...", 'status-pending');
+    addDebugLog('正在请求 API: ' + API_URL);
+
+    try {
+        const res = await fetch(API_URL);
+        addDebugLog('API 响应状态: ' + res.status);
+
+        if (res.status === 402) {
+            const msg = res.headers.get('x-payment-message') || '待签名消息';
+            addDebugLog('获取到待签名消息: ' + msg, 'success');
+            updateStatus(`✅ 获取成功，点击按钮扫码签名`, 'status-success');
+            return msg;
+        } else if (res.status === 200) {
+            const data = await res.json();
+            addDebugLog('API 已授权', 'success');
+            updateStatus("✅ API 已授权，无需重复签名", 'status-success');
+            resultBox.style.display = 'block';
+            resultBox.textContent = JSON.stringify(data, null, 2);
+            setButtonState('已授权', true);
+            return null;
+        } else {
+            addDebugLog(`服务器返回错误状态: ${res.status}`, 'error');
+            updateStatus(`❌ 服务器返回错误状态: ${res.status}`, 'status-error');
+            return null;
+        }
+    } catch (e) {
+        addDebugLog(`网络请求失败: ${e.message}`, 'error');
+        updateStatus(`❌ 网络请求失败: ${e.message}`, 'status-error');
+        return null;
+    }
+}
+
+// 核心功能：V2 Provider 连接和签名
+async function connectAndSign(paymentMessage) {
+    try {
+        setButtonState('连接中...', true);
+        addDebugLog('开始初始化 WalletConnect Provider V2...');
+
+        // 调试：查看所有可用的全局变量
+        const walletGlobals = Object.keys(window).filter(key =>
+            key.toLowerCase().includes('wallet') || key.includes('Connect'));
+        addDebugLog('可用的全局变量: ' + walletGlobals.join(', '));
+
+        // 尝试多种可能的构造函数名称
+        const WCProviderConstructor =
+            window.WalletConnectWeb3Provider ||
+            window.WalletConnectProvider ||
+            (window.WalletConnectProvider && window.WalletConnectProvider.default) ||
+            (window.WalletConnectWeb3Provider && window.WalletConnectWeb3Provider.default);
+
+        if (typeof WCProviderConstructor !== 'function') {
+            throw new Error("WalletConnectProvider 构造函数未找到。尝试的变量: " +
+                walletGlobals.join(', '));
+        }
+
+        // 1. 初始化 Provider
+        wcProvider = new WCProviderConstructor({
+            projectId: PROJECT_ID,
+            chains: [BASE_SEPOLIA_CONFIG.chainId],
+            rpcMap: {
+                [BASE_SEPOLIA_CONFIG.chainId]: BASE_SEPOLIA_CONFIG.rpcUrl,
+            },
+            // V2 Provider 默认会弹出模态框显示二维码
+            showQrModal: true,
+            qrModalOptions: {
+                themeMode: "light",
+                themeVariables: {
+                    '--wcm-z-index': '9999',
+                },
+            }
+        });
+        addDebugLog('WalletConnect Provider V2 初始化成功', 'success');
+
+        updateStatus("正在打开钱包连接 Modal (扫码或选择钱包)...", 'status-pending');
+
+        // 2. 启用连接
+        // open() 方法会自动显示 V2 Modal，等待用户连接
+        const accounts = await wcProvider.request({ method: "eth_requestAccounts" });
+
+        addDebugLog('✅ WalletConnect V2 连接成功', 'success');
+
+        // 3. 获取签名器
+        const web3Provider = new ethers.providers.Web3Provider(wcProvider);
+        const signer = web3Provider.getSigner();
+        const address = accounts[0]; // 使用连接到的第一个账户
+
+        addDebugLog('钱包地址: ' + address, 'success');
+        updateStatus(`✅ 钱包已连接: ${address.slice(0, 6)}...${address.slice(-4)}`, 'status-success');
+
+        // 检查网络 (可选，但推荐)
+        const network = await web3Provider.getNetwork();
+        if (network.chainId !== BASE_SEPOLIA_CONFIG.chainId) {
+            updateStatus(
+                `⚠️ 网络不匹配！<br>当前: Chain ID ${network.chainId}<br>需要: ${BASE_SEPOLIA_CONFIG.name} (${BASE_SEPOLIA_CONFIG.chainId})<br><br>请在钱包中切换网络`,
+                'status-error'
+            );
+            setButtonState('网络错误 - 重新连接', false);
+            return;
+        }
+
+        // 4. 请求签名
+        updateStatus("📝 请在钱包中确认签名...", 'status-pending');
+        setButtonState('等待签名...', true);
+        addDebugLog('请求签名消息: ' + paymentMessage);
+
+        const signature = await signer.signMessage(paymentMessage);
+        addDebugLog('✅ 签名成功: ' + signature.substring(0, 20) + '...', 'success');
+
+        // 5. 提交签名
+        updateStatus("📤 正在提交签名到服务器...", 'status-pending');
+        addDebugLog('提交签名到 API...');
+
+        const submitRes = await fetch(API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-payment': signature,
+                'x-payment-message': paymentMessage
+            },
+            body: JSON.stringify({ action: 'authorize' })
+        });
+
+        addDebugLog('API 响应状态: ' + submitRes.status);
+
+        if (submitRes.status === 200) {
+            const data = await submitRes.json();
+            addDebugLog('✅ 授权成功！', 'success');
+            updateStatus("✅ 授权成功！", 'status-success');
+            resultBox.style.display = 'block';
+            resultBox.textContent = JSON.stringify(data, null, 2);
+            setButtonState('授权成功', true);
+            // 授权成功后断开连接
+            await wcProvider.disconnect();
+            addDebugLog('已断开连接', 'success');
+        } else {
+            let errorMsg = '提交签名失败';
+            try {
+                const errorData = await submitRes.json();
+                errorMsg = errorData.message || errorMsg;
+                addDebugLog('服务器错误: ' + errorMsg, 'error');
+            } catch (e) {
+                addDebugLog('无法解析错误响应', 'error');
+            }
+
+            updateStatus(`❌ 授权失败: ${errorMsg}`, 'status-error');
+            setButtonState('重新连接', false);
+        }
+
+    } catch (error) {
+        // 捕获用户关闭 Modal 或拒绝连接/签名的错误
+        if (wcProvider && wcProvider.disconnect) {
+            await wcProvider.disconnect();
+        }
+
+        let errorMsg = '未知错误';
+        if (error.message) {
+            if (error.message.includes('User closed modal') || error.message.includes('rejected')) {
+                errorMsg = '用户取消操作';
+            } else if (error.message.includes('WalletConnectProvider')) {
+                 errorMsg = `初始化失败: ${error.message}`;
+            } else {
+                errorMsg = error.message;
+            }
+        }
+
+        addDebugLog('错误: ' + errorMsg, 'error');
+        updateStatus(`❌ ${errorMsg}`, 'status-error');
+        setButtonState('重新连接', false);
+    }
+}
+
+// 主函数
+async function main() {
+    addDebugLog('页面加载完成');
+    setButtonState('初始化中...', true);
+    qrcodeDisplay.style.display = 'none'; // 确保二维码容器开始时隐藏
+
+    const paymentMessage = await fetchPaymentMessage();
+
+    if (paymentMessage) {
+        setButtonState('连接钱包并签名 (V2)', false);
+        connectButton.onclick = () => connectAndSign(paymentMessage);
+        addDebugLog('准备就绪，可以点击按钮连接', 'success');
+    } else {
+        if (!statusMessage.innerHTML.includes('已授权')) {
+            setButtonState('获取消息失败', true);
+        }
+    }
+}
+
+// 页面加载
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', main);
+} else {
+    main();
+}
+</script>
+</body>
+</html>
