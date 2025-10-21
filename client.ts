@@ -1,78 +1,115 @@
-import { Hono } from "hono";
-import { cors } from "hono/cors";
-import { serve } from "@hono/node-server";
-import { serveStatic } from '@hono/node-server/serve-static';
+// 服务器代码 (simple_third_web_server.ts)
+import {createThirdwebClient} from "thirdweb";
+import {facilitator, settlePayment, verifyPayment} from "thirdweb/x402";
+import {sepolia} from "thirdweb/chains";
+import {Hono} from "hono";
+import {cors} from "hono/cors";
+import {serve} from "@hono/node-server";
 import 'dotenv/config';
+import type {Address} from "thirdweb/utils";
+import {serveStatic} from "@hono/node-server/serve-static"; // 引入 Address 类型
 
-// 环境变量
+const app = new Hono();
+const PORT = 3005;
+
+const THIRDWEB_SECRET_KEY = process.env.THIRDWEB_SECRET_KEY;
+const THIRDWEB_WALLET_ADDRESS = process.env.THIRDWEB_WALLET_ADDRESS;
+const PAY_TO_ADDRESS = process.env.THIRDWEB_WALLET_ADDRESS;
+const API_RESOURCE_URL = `http://localhost:${PORT}/api/weather`;
+const USDC_CONTRACT_ADDRESS = process.env.USDC_CONTRACT_ADDRESS! as Address;
 const clientId = process.env.THIRDWEB_CLIENT_ID;
-const payToAddress = process.env.PAY_TO_ADDRESS;
-// 示例收款地址和金额。前端的 wrapFetchWithPayment 会读取这些信息。
-const PAY_TO_ADDRESS = payToAddress!; // 示例收款地址 (USDC Sepolia 合约地址)
-const PAY_AMOUNT = "100000"; // 示例金额 (100,000 wei = 0.1 USDC)
-
-if (!clientId) {
-    throw new Error("Missing THIRDWEB_CLIENT_ID environment variable.");
+if (!THIRDWEB_SECRET_KEY || !THIRDWEB_WALLET_ADDRESS) {
+    console.error("❌ 缺少必要的环境变量: THIRDWEB_SECRET_KEY 和 FACILITATOR_WALLET_ADDRESS 必须设置!");
+    process.exit(1);
 }
 
-// 初始化 Hono 应用
-const app = new Hono();
+const client = createThirdwebClient({secretKey: THIRDWEB_SECRET_KEY!});
 
-// CORS 配置
-app.use('/*', cors({
+const thirdwebX402Facilitator = facilitator({
+    client,
+    serverWalletAddress: THIRDWEB_WALLET_ADDRESS as Address, // 确保类型正确
+});
+
+
+app.use('/api/*', cors({
     origin: '*',
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    // 确保允许 X-Payment 和 PayTo-Required 响应头
     allowHeaders: ['Content-Type', 'X-Payment', 'Authorization', 'PayTo-Required'],
     credentials: true,
 }));
-
 // 提供静态文件
-app.use('/*', serveStatic({ root: './public' }));
+app.use('/*', serveStatic({root: './public'}));
 
-// 获取 Client ID 的 API
+console.log(PAY_TO_ADDRESS);
+
 app.get('/api/config', (c) => {
     return c.json({ clientId });
 });
 
-/**
- * 模拟 X402 支付网关保护的 API 端点。
- */
-app.get('/api/weather', (c) => {
-    // 1. 检查 X-Payment 头部是否存在
-    const paymentHeader = c.req.header('X-Payment');
+app.get("/api/weather", async (c) => {
+    const paymentData = c.req.header("x-payment");
 
-    if (paymentHeader) {
-        // 2. 如果 X-Payment 存在，认为支付成功，返回数据
-        console.log("✅ X-Payment Header 存在。授权通过，返回天气数据。");
+    console.log(`[${new Date().toISOString()}] 收到请求，X-Payment 头部: ${paymentData ? '存在' : '缺失'}`);
+
+    const paramsArgs = {
+        resourceUrl: API_RESOURCE_URL,
+        method: "GET",
+        paymentData,
+        payTo: PAY_TO_ADDRESS as Address, // 确保类型正确
+        network: sepolia,
+        price: {
+            amount: "10000", // 0.01 USDC
+            asset: {
+                address: USDC_CONTRACT_ADDRESS,
+                decimals: 6
+            },
+        },
+        facilitator: thirdwebX402Facilitator,
+        routeConfig: {
+            description: "Access to premium API content",
+            mimeType: "application/json",
+            maxTimeoutSeconds: 300,
+        },
+    };
+
+    try {
+        // First verify the payment is valid
+        const verifyResult = await verifyPayment(paramsArgs);
+
+        if (verifyResult.status !== 200) {
+            return Response.json(verifyResult.responseBody, {
+                status: verifyResult.status,
+                headers: verifyResult.responseHeaders,
+            });
+        }
+
+        const result = await settlePayment(paramsArgs);
+
+        if (result.status === 200) {
+            console.log("✅ 支付验证成功，返回内容。");
+            return c.json(
+                {data: "This is the premium content you paid for!"},
+                200,
+                result.responseHeaders
+            );
+        } else {
+            console.log(`⚠️ 支付要求/失败，返回状态码: ${result.status}`);
+            return c.json(
+                result.responseBody,
+                result.status,
+                result.responseHeaders
+            );
+        }
+    } catch (error) {
+        console.error("❌ 服务器处理支付时出错:", error);
         return c.json({
-            status: "success",
-            data: {
-                city: "Shanghai",
-                temperature: "25°C",
-                condition: "Mostly Sunny",
-                payment_note: "Content delivered after successful X402 payment."
-            }
-        });
-    } else {
-        // 3. 如果 X-Payment 不存在，返回 402 Payment Required
-        console.log("⚠️ X-Payment Header 缺失。返回 402 Payment Required。");
-
-        // PayTo-Required 头告知客户端必须支付给哪个地址多少钱
-        // 格式: <address>:<amount>:<chain_id>:<optional message>
-        // thirdweb 的 wrapFetchWithPayment 默认会查找 Sepolia 上的 USDC 合约，所以我们提供收款地址和金额
-        c.header('PayTo-Required', `${PAY_TO_ADDRESS}:${PAY_AMOUNT}:0.1 USDC Fee for access`);
-
-        return c.text("402 Payment Required. Please complete the X402 payment.", 402);
+            error: "服务器内部错误",
+            message: (error as Error).message
+        }, 500);
     }
 });
 
 
-// 启动服务器在 3005 端口
-const PORT = 3005;
+console.log(`\n🚀 X402 Facilitator 服务器启动于端口 ${PORT}`);
 
-console.log(`\n🚀 X402 客户端服务器启动于端口 ${PORT}`);
-console.log(`📝 访问 http://localhost:${PORT} 查看前端界面`);
-console.log(`🌟 支付网关：/api/weather (需要 X402 支付)`);
-
-serve({ fetch: app.fetch, port: PORT });
+serve({fetch: app.fetch, port: PORT});
